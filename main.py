@@ -57,7 +57,10 @@ def get_mx_servers(domain: str) -> list[str]:
     """查询域名的 MX 记录（邮件服务器地址）"""
     try:
         import dns.resolver
-        answers = dns.resolver.resolve(domain, "MX")
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = 2.0
+        resolver.lifetime = 3.0
+        answers = resolver.resolve(domain, "MX")
         mx_list = sorted(
             [(r.preference, str(r.exchange).rstrip(".")) for r in answers],
             key=lambda x: x[0],
@@ -93,31 +96,21 @@ def smtp_verify(email: str, timeout: float = 8.0) -> dict:
             "detail": "该域名没有配置邮件服务器（MX记录），邮箱不可能存在",
         }
 
-    # 只尝试前2个MX（云IP屏蔽时第一个就超时，遍历全部纯属浪费时间）
-    connect_fail = 0
-    for mx in mx_servers[:2]:
+    # 只尝试第1个MX（云IP屏蔽时第一个就超时，试第2个纯属浪费时间）
+    for mx in mx_servers[:1]:
         try:
             result = _raw_smtp_rcpt(mx, email, timeout)
             if result is not None:
                 return result
         except (socket.timeout, ConnectionRefusedError, OSError):
-            connect_fail += 1
-            continue
+            break
         except Exception:
-            connect_fail += 1
-            continue
-    # 连接层全失败 = 云IP被屏蔽的典型信号（DNS能解析但25端口无响应），立即降级
-    if connect_fail >= 1:
-        return {
-            "valid": None,
-            "reason": "TIMEOUT",
-            "detail": "无法连接邮件服务器（云服务器IP常被邮件服务商屏蔽），无法确定",
-        }
-
+            break
+    # 连接层失败 = 云IP被屏蔽的典型信号（DNS能解析但25端口无响应），立即降级
     return {
         "valid": None,
         "reason": "TIMEOUT",
-        "detail": "无法连接邮件服务器（可能被反垃圾策略拦截），无法确定",
+        "detail": "无法连接邮件服务器（云服务器IP常被邮件服务商屏蔽），无法确定",
     }
 
 
@@ -239,7 +232,7 @@ def verify_email(request: EmailCheckRequest):
     # 3. 深度检查（SMTP握手）——云服务器IP常被邮件商屏蔽，超时自动降级
     if request.deep_check:
         t0 = time.time()
-        result = smtp_verify(email, timeout=2.5)  # 单MX最多2.5秒，总上限~6秒
+        result = smtp_verify(email, timeout=2.0)  # 单MX最多2秒，总上限~4秒
         elapsed = time.time() - t0
         # 云服务器IP被屏蔽时（全部TIMEOUT），降级为浅检查结果并标注
         if result.get("valid") is None and result.get("reason") == "TIMEOUT":
