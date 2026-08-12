@@ -53,8 +53,18 @@ COMMON_DOMAINS = {
 }
 
 
+# 简单的MX查询缓存（减少重复DNS查询，缓存10分钟）
+_MX_CACHE = {}
+_MX_CACHE_TTL = 600
+
+
 def get_mx_servers(domain: str) -> list[str]:
-    """查询域名的 MX 记录（邮件服务器地址）"""
+    """查询域名的 MX 记录（邮件服务器地址），带10分钟缓存"""
+    import time as _t
+    now = _t.time()
+    cached = _MX_CACHE.get(domain)
+    if cached and now - cached[0] < _MX_CACHE_TTL:
+        return cached[1]
     try:
         import dns.resolver
         resolver = dns.resolver.Resolver()
@@ -65,13 +75,15 @@ def get_mx_servers(domain: str) -> list[str]:
             [(r.preference, str(r.exchange).rstrip(".")) for r in answers],
             key=lambda x: x[0],
         )
-        return [mx for _, mx in mx_list]
+        result = [mx for _, mx in mx_list]
     except Exception:
         # 无 dnspython 时用 socket 兜底（只能查 A 记录，不准确）
         try:
-            return [socket.gethostbyname(domain)]
+            result = [socket.gethostbyname(domain)]
         except Exception:
-            return []
+            result = []
+    _MX_CACHE[domain] = (now, result)
+    return result
 
 
 def smtp_verify(email: str, timeout: float = 8.0) -> dict:
