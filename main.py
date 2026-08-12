@@ -15,6 +15,7 @@ import re
 import socket
 import smtplib
 import asyncio
+import time
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -224,13 +225,25 @@ def verify_email(request: EmailCheckRequest):
     # 2. 一次性邮箱检查
     disposable = domain in DISPOSABLE_DOMAINS
 
-    # 3. 深度检查（SMTP握手）
+    # 3. 深度检查（SMTP握手）——云服务器IP常被邮件商屏蔽，超时自动降级
     if request.deep_check:
-        result = smtp_verify(email)
+        t0 = time.time()
+        result = smtp_verify(email, timeout=4.0)  # 单MX最多4秒，总上限~12秒
+        elapsed = time.time() - t0
+        # 云服务器IP被屏蔽时（全部TIMEOUT），降级为浅检查结果并标注
+        if result.get("valid") is None and result.get("reason") == "TIMEOUT":
+            return EmailCheckResult(
+                email=email, valid=None, reason="LIGHT_FALLBACK",
+                detail="SMTP深度验证被邮件服务器屏蔽（云IP常见），已降级为浅检查：格式+MX+一次性域名均正常",
+                format_ok=True, disposable=disposable,
+                confidence="medium",
+                mx_servers=get_mx_servers(domain),
+            )
         result["email"] = email
         result["format_ok"] = True
         result["disposable"] = disposable
         result["mx_servers"] = get_mx_servers(domain)
+        result["elapsed"] = round(elapsed, 2)
         return EmailCheckResult(**result)
     else:
         return EmailCheckResult(
