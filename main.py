@@ -109,9 +109,11 @@ def smtp_verify(email: str, timeout: float = 8.0) -> dict:
         }
 
     # 只尝试第1个MX（云IP屏蔽时第一个就超时，试第2个纯属浪费时间）
+    deadline = time.time() + timeout
     for mx in mx_servers[:1]:
         try:
-            result = _raw_smtp_rcpt(mx, email, timeout)
+            remaining = max(0.5, deadline - time.time())
+            result = _raw_smtp_rcpt(mx, email, remaining)
             if result is not None:
                 return result
         except (socket.timeout, ConnectionRefusedError, OSError):
@@ -129,7 +131,12 @@ def smtp_verify(email: str, timeout: float = 8.0) -> dict:
 def _raw_smtp_rcpt(mx: str, email: str, timeout: float = 8.0):
     """原始 socket 执行 SMTP 三步对话，返回验证结果或 None（需换下一个MX）"""
     try:
-        s = socket.create_connection((mx, 25), timeout=timeout)
+        # 只解析第一个IP再连接：create_connection 会遍历MX的所有A记录，
+        # 163等服务器有5-6个IP且对云IP丢弃SYN，逐个等超时=10-15s（实测）
+        ip = socket.gethostbyname(mx)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((ip, 25))
     except Exception:
         return None
     s.settimeout(timeout)
