@@ -13,8 +13,6 @@
 
 import re
 import socket
-import smtplib
-import asyncio
 import time
 from typing import Optional
 from fastapi import FastAPI, HTTPException
